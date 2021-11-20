@@ -8,12 +8,13 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import yfinance as yf
+from itertools import product
 plt.style.use("seaborn")
 
 
 
 class FinancialInstrument():
-    def __init__(self, ticker, start, end):
+    def __init__(self, ticker, start=None, end=None):
         self._ticker = ticker
         self.start = start
         self.end = end
@@ -96,4 +97,99 @@ class RiskReturn(FinancialInstrument): # Child
         mean_return = round(self.data.log_returns.mean() * 252, 3)
         risk = round(self.data.log_returns.std() * np.sqrt(252), 3)
         print("Return: {} | Risk: {}".format(mean_return, risk))
+        #print("The sharpe ratio is {}".format(mean))        
+        
+        
+        
+        
+class EMABackTester(FinancialInstrument):
+    def __init__(self, ticker, EMA_S, EMA_L, start=None, end=None):
+        self.EMA_S = EMA_S
+        self.EMA_L = EMA_L
+        self.results = None
+        self._ticker = ticker
+        self.start = start
+        self.end = end
+        self.get_data()
+        self.log_returns()
+        
+        
+    def __repr__(self): 
+        return "EMABackTester(ticker = {}, start = {}, end = {})".format(self._ticker, self.start, self.end)
+    
+    def get_data(self): # it overwrites the old function
+        super().get_data()
+        self.prepare_data()
+    
+    def prepare_data(self):
+        #data = self.data.copy()
+        self.data['EMA_S'] = self.data['price'].ewm(span = self.EMA_S, min_periods= self.EMA_S).mean()
+        self.data['EMA_L'] = self.data['price'].ewm(span = self.EMA_L, min_periods= self.EMA_L).mean()
+        #self.data = data
+    
+    def log_returns(self):
+        super().log_returns()
+        self.data.rename({'log_returns': 'returns'}, axis = 'columns', inplace=True)
+        self.data = self.data[['price', 'returns', 'EMA_S', 'EMA_L']]
+        
+    def set_parameters(self, EMA_S = None, EMA_L = None):
+        '''reset short and long
+        '''
+        if EMA_S is not None: self.EMA_S = EMA_S 
+        if EMA_L is not None: self.EMA_L = EMA_L
+        if EMA_S is not None or EMA_L is not None:
+            self.prepare_data()
+ 
+    def test_strategy(self):
+        data = self.data.copy().dropna()
+        data['position'] = np.where(data['EMA_S'] > data['EMA_L'], 1, -1)
+        #data['position'].shift(1)
+        #return data
+        data['strategy'] = data['position'].shift(1) * data['returns']
+        data.dropna(inplace=True)
+        data['creturns'] = data['returns'].cumsum().apply(np.exp)
+        data['cstrategy'] = data['strategy'].cumsum().apply(np.exp)
+        self.results = data
+        
+        perf = data['cstrategy'].iloc[-1]
+        outperf = perf - data['creturns'].iloc[-1]
+        #print("The performance of the strategy EMA_S: {} EMA_L: {} is {}, \n outperformed than simple buy and hold by {}".format(self.EMA_S, self.EMA_L, round(perf, 6), round(outperf, 6)))
+        return round(perf, 6), round(outperf, 6)
+    
+    def plot_results(self):
+        if self.results is None:
+            print("Please run test_strategy() first")
+        else:
+            title = "{} | EMA_S = {} | EMA_L = {}".format(self._ticker, self.EMA_S, self.EMA_L)
+            self.results[['creturns', 'cstrategy']].plot(title=title, figsize=(12,8))
+    
+    def optimize_parameters(self, EMA_S_range, EMA_L_range):
+        ''' Finds the optimal strategy (global maximum) given the EMA parameter ranges.
 
+        Parameters
+        ----------
+        EMA_S_range, EMA_L_range: tuple
+            tuples of the form (start, end, step size)
+        '''
+        combinations = list(product(range(*EMA_S_range), range(*EMA_L_range)))
+        
+        # test all combinations
+        results = []
+        for comb in combinations:
+            self.set_parameters(comb[0], comb[1])
+            results.append(self.test_strategy()[0])
+        
+        best_perf = np.max(results) # best performance
+        opt = combinations[np.argmax(results)] # optimal parameters
+        
+        # run/set the optimal strategy
+        self.set_parameters(opt[0], opt[1])
+        self.test_strategy()
+                   
+        # create a df with many results
+        many_results =  pd.DataFrame(data = combinations, columns = ["EMA_S", "EMA_L"])
+        many_results["performance"] = results
+        self.results_overview = many_results
+                            
+        return opt, best_perf
+    
